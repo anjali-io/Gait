@@ -16,7 +16,7 @@ data_cfg:
   dataset_root: "/home/pushpanjali/Gait/GREW_pkl_final"
   dataset_partition: "./datasets/GREW/GREW.json"
   num_workers: 8
-  data_in_use: [True]
+  data_in_use: [True, True]
   remove_no_gallery: false
   cache: false
   test_dataset_name: GREW
