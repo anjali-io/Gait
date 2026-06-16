@@ -43,6 +43,10 @@ loss_cfg:
     type: CrossEntropyLoss
     log_prefix: softmax
     log_accuracy: true
+  - loss_term_weight: 0.5
+    margin: 0.2
+    type: MutualLikelihoodScoreLoss
+    log_prefix: pfe
 
 model_cfg:
   model: RAHFE

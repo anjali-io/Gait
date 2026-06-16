@@ -645,6 +645,12 @@ class RAHFE(BaseModel):
         self.FCs_fuse = SeparateFCs(parts_num=41, in_channels=256, out_channels=256)
         self.BNNecks  = SeparateBNNecks(41, channels[2], class_num=class_num)
 
+        # ── Uncertainty Head (UPML — Uncertainty-Propagated Metric Learning) ──
+        # Produces log-sigma for each of the 41 parts in the 256-dim space.
+        # Sigma is then scaled by the inverse of the per-sample reliability so
+        # that unreliable sequences automatically receive higher uncertainty.
+        self.sigma_head = SeparateFCs(parts_num=41, in_channels=256, out_channels=256)
+
     # ── Backbone helpers ──────────────────────────────────────────────────────
     def _make_layer(self, block, planes, stride, blocks_num, mode='2d'):
         from ..modules import BasicBlock2D as BB2D
@@ -776,6 +782,25 @@ class RAHFE(BaseModel):
         fused_out = self.FCs_fuse(embed_1)               # [N,256,41]
         emb2, logits = self.BNNecks(fused_out)
 
+        # ── UPML: Uncertainty-Propagated Metric Learning ───────────────────
+        # Step 1: Predict raw log-sigma from the same feature representation
+        log_sigma  = self.sigma_head(embed_1)                          # [N,256,41]
+        sigma_base = F.softplus(log_sigma) + 1e-6                      # strictly positive
+
+        # Step 2: Scale sigma by inverse reliability.
+        # r_per_sample ∈ [0,1] — average of all four reliability levels.
+        # High reliability → low uncertainty (narrow bubble).
+        # Low reliability  → high uncertainty (wide bubble), e.g. for distractors.
+        r_per_sample = (
+            r_F.mean(dim=1)           +   # [N]  frame-level
+            r_J.mean(dim=(1, 2))      +   # [N]  joint-level
+            r_B.mean(dim=-1)          +   # [N]  body-region-level
+            r_M.mean(dim=-1)              # [N]  modality-level
+        ) / 4.0                           # normalise to [0,1]
+        uncertainty_scale = (1.0 - r_per_sample).clamp(0.0, 1.0)      # [N]
+        # Broadcast [N] → [N,256,41] to scale every dimension and part
+        sigma = sigma_base * (1.0 + uncertainty_scale[:, None, None])  # [N,256,41]
+
         # ── Reliability-consistency regularization losses ──────────────────
         loss_F = self._frame_reg_loss(r_F, delta_t)
         loss_J = self._joint_reg_loss(r_J)
@@ -786,14 +811,20 @@ class RAHFE(BaseModel):
 
         retval = {
             'training_feat': {
-                'triplet':    {'embeddings': fused_out, 'labels': labs},
-                'softmax':    {'logits': logits, 'labels': labs},
+                'triplet': {'embeddings': fused_out, 'labels': labs},
+                'softmax': {'logits': logits, 'labels': labs},
+                # UPML loss: passes mu (fused_out) + sigma so that
+                # MutualLikelihoodScoreLoss can compute probabilistic distances.
+                'pfe':     {'embeddings': fused_out, 'sigma': sigma, 'labels': labs},
             },
             'visual_summary': {
                 'image/sils': x.view(n * s, 1, h, w)
             },
             'inference_feat': {
-                'embeddings': fused_out
+                # At inference time we use mu only (backward compatible).
+                # sigma is also stored so visualisation scripts can read it.
+                'embeddings': fused_out,
+                'sigma':      sigma.detach()
             },
             # Expose reliability scores for analysis / ablation
             'reliability': {
@@ -801,6 +832,7 @@ class RAHFE(BaseModel):
                 'r_J': r_J.detach(),
                 'r_B': r_B.detach(),
                 'r_M': r_M.detach(),
+                'uncertainty_scale': uncertainty_scale.detach(),
                 'reg_loss': reliability_loss.detach()
             }
         }
