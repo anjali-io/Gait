@@ -1,0 +1,125 @@
+# RAHFE Configuration for GREW — Full Dataset Training (20,000 subjects)
+# This config is for training the RAHFE+UPML model on the complete GREW training set.
+#
+# Key differences from the subset config (RAHFE_for_grew_distractor.yaml):
+#   - class_num:   500  →  20000  (full GREW training set)
+#   - total_iter:  60k  →  250k   (standard for full GREW)
+#   - milestones:  [40k]→  [150k, 200k] (two-step LR decay)
+#   - save_name:   RAHFE_for_GREW → RAHFE_GREW_FULL
+#   - restore_hint: 0  (start from scratch, no pretrained checkpoint)
+#
+# After training, use RAHFE_for_grew_distractor.yaml for the distractor benchmark test.
+# Just change restore_hint to the final iteration (e.g. 250000) before testing.
+
+data_cfg:
+  dataset_name: GREW
+  dataset_root: "/home/pushpanjali/Gait/GREW_pkl_final"
+  dataset_partition: "./datasets/GREW/GREW.json"
+  num_workers: 8
+  data_in_use: [True]
+  remove_no_gallery: false
+  cache: false
+  test_dataset_name: GREW
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 250000
+  save_name: RAHFE_GREW_FULL
+  eval_func: evaluate_real_scene_with_distractor
+  sampler:
+    batch_shuffle: false
+    batch_size: 4
+    sample_type: all_ordered
+    frames_all_limit: 720
+  metric: euc
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: GaitTR_MultiInput
+          joint_format: coco
+        - type: SkeletonInput
+    - type: BaseSilCuttingTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLoss
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+  - loss_term_weight: 0.5
+    margin: 0.2
+    type: MutualLikelihoodScoreLoss
+    log_prefix: pfe
+
+model_cfg:
+  model: RAHFE
+  t_kernel_size: 3
+  beta_F: 0.1
+  beta_J: 0.05
+  beta_M: 0.2
+  alpha_F: 1.0
+  tau_M: 0.5
+  Backbone:
+    mode: p3d
+    in_channels: 1
+    layers: [1, 2, 2, 1]
+    channels: [32, 64, 128, 256]
+  SeparateBNNecks:
+    class_num: 20000   # ← Full GREW training set (20,000 identities)
+
+optimizer_cfg:
+  lr: 0.0001
+  momentum: 0.9
+  solver: Adam
+  weight_decay: 0.0001  # Light L2 regularization for full dataset training
+
+scheduler_cfg:
+  gamma: 0.1
+  milestones: [150000, 200000]   # Two-step decay: 1e-4 → 1e-5 → 1e-6
+  scheduler: MultiStepLR
+
+trainer_cfg:
+  enable_float16: true
+  fix_BN: false
+  with_test: false
+  log_iter: 1000
+  restore_ckpt_strict: false     # false = start fresh (ignore missing/extra keys)
+  restore_hint: 0                # 0 = train from scratch
+  save_iter: 10000               # Save checkpoint every 10k iters
+  save_name: RAHFE_GREW_FULL
+  sync_BN: true
+  total_iter: 250000             # Full training: 250,000 iterations
+  find_unused_parameters: true
+  sampler:
+    batch_shuffle: true
+    batch_size: [8, 8]           # 8 subjects × 8 sequences per GPU
+    frames_num_fixed: 30
+    frames_skip_num: 4
+    sample_type: fixed_ordered
+    type: TripletSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: PointNoise
+          std: 0.3
+        - type: InversePosesPre
+          probability: 0.1
+        - type: JointNoise
+          std: 0.3
+        - type: GaitTR_MultiInput
+          joint_format: coco
+        - type: SkeletonInput
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.2
+        - type: BaseSilCuttingTransform
+        - type: RandomHorizontalFlip
+          prob: 0.2
+        - type: RandomRotate
+          prob: 0.2
