@@ -1,0 +1,113 @@
+# RAHFE Configuration for GREW — Official Distractor Evaluation
+# Uses evaluate_real_scene_with_distractor which merges gallery (01) + distractor (04)
+# Dataset root must point to a pkl folder that includes BOTH the test sequences AND
+# the rearranged+pretreated distractor sequences (GREW_pkl_with_distractor).
+
+data_cfg:
+  dataset_name: GREW
+  dataset_root: "/home/pushpanjali/Gait/GREW_pkl_final"
+  dataset_partition: "./datasets/GREW/GREW.json"
+  num_workers: 4
+  data_in_use: [True]
+  remove_no_gallery: false
+  cache: false
+  test_dataset_name: GREW
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 60000
+  save_name: RAHFE_for_GREW
+  eval_func: evaluate_real_scene_with_distractor
+  sampler:
+    batch_shuffle: false
+    batch_size: 4
+    sample_type: all_ordered
+    frames_all_limit: 720
+  metric: euc
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: GaitTR_MultiInput
+          joint_format: coco
+        - type: SkeletonInput
+    - type: BaseSilCuttingTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLoss
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+
+model_cfg:
+  model: RAHFE
+  t_kernel_size: 3
+  beta_F: 0.1
+  beta_J: 0.05
+  beta_M: 0.2
+  alpha_F: 1.0
+  tau_M: 0.5
+  Backbone:
+    mode: p3d
+    in_channels: 1
+    layers: [1, 2, 2, 1]
+    channels: [32, 64, 128, 256]
+  SeparateBNNecks:
+    class_num: 500
+
+optimizer_cfg:
+  lr: 0.0001
+  momentum: 0.9
+  solver: Adam
+  weight_decay: 0
+
+scheduler_cfg:
+  gamma: 0.1
+  milestones: [40000]
+  scheduler: MultiStepLR
+
+trainer_cfg:
+  enable_float16: true
+  fix_BN: false
+  with_test: false       # set to false: this config is test-only
+  log_iter: 1000
+  restore_ckpt_strict: true
+  restore_hint: 0
+  save_iter: 20000
+  save_name: RAHFE_for_GREW
+  sync_BN: true
+  total_iter: 60000
+  find_unused_parameters: true
+  sampler:
+    batch_shuffle: true
+    batch_size: [8, 8]
+    frames_num_fixed: 30
+    frames_skip_num: 4
+    sample_type: fixed_ordered
+    type: TripletSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: PointNoise
+          std: 0.3
+        - type: InversePosesPre
+          probability: 0.1
+        - type: JointNoise
+          std: 0.3
+        - type: GaitTR_MultiInput
+          joint_format: coco
+        - type: SkeletonInput
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.2
+        - type: BaseSilCuttingTransform
+        - type: RandomHorizontalFlip
+          prob: 0.2
+        - type: RandomRotate
+          prob: 0.2
